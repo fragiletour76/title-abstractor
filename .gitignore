@@ -1,0 +1,42 @@
+# Environment variables
+.env
+.streamlit/secrets.toml
+
+# Database and storage
+abstracts.db
+pdf_storage/
+temp_*.pdf
+error_log_*.txt
+
+# Test/Debug files
+*_response.txt
+chunk_*.txt
+json_parse_error.txt
+final_result.json
+full_document_response.txt
+inventory_response.txt
+test_*.py
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backups
+config/prompts_backup.py
+
+# OS
+.DS_Store
+Thumbs.db
