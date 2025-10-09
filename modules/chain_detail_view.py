@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 from datetime import datetime
+import re
 
 
 def render_chain_detail_view(abstract):
@@ -137,11 +138,11 @@ def _render_deed_with_related(deed, related, all_satisfactions):
         
         st.markdown(f"**Recording:** {rec_number}")
         
-        # Property description
+        # Property description - NO NESTED EXPANDER, just show with checkbox
         legal_desc = deed.get('property', {}).get('legalDescription', '')
         if legal_desc:
-            with st.expander("📝 Legal Description", expanded=False):
-                st.text(legal_desc[:500] + ("..." if len(legal_desc) > 500 else ""))
+            if st.checkbox("📝 Show Legal Description", key=f"legal_{deed_idx}"):
+                st.text_area("Legal Description", legal_desc, height=150, key=f"legal_text_{deed_idx}", disabled=True)
         
         # Related mortgages
         if related.get('mortgages'):
@@ -168,15 +169,14 @@ def _render_mortgage(mortgage, all_satisfactions):
     mtg_recording = mortgage.get('recording', {})
     mtg_amount = mortgage.get('monetary', {}).get('mortgageAmount', 'Unknown')
     
-    # Check if satisfied
-    satisfaction = _find_satisfaction(mortgage, all_satisfactions)
+    # Check if satisfied (either separate document or in notes)
+    satisfaction_info = _get_satisfaction_info(mortgage, all_satisfactions)
     
-    if satisfaction:
+    if satisfaction_info:
         status_icon = "✅"
         status_text = "SATISFIED"
         status_color = "green"
-        sat_date = satisfaction.get('dates', {}).get('recordDate', 'Unknown date')
-        status_detail = f"Discharged: {sat_date}"
+        status_detail = satisfaction_info
     else:
         status_icon = "🔴"
         status_text = "ACTIVE"
@@ -198,11 +198,6 @@ def _render_mortgage(mortgage, all_satisfactions):
         st.write(f"**Mortgagor:** {', '.join(mtg_parties.get('from', ['Unknown']))}")
         st.write(f"**Mortgagee:** {', '.join(mtg_parties.get('to', ['Unknown']))}")
         st.write(f"**Status:** :{status_color}[{status_detail}]")
-        
-        # Show satisfaction details if exists
-        if satisfaction:
-            sat_recording = satisfaction.get('recording', {}).get('locationInstrumentNumber', 'N/A')
-            st.caption(f"Satisfaction recorded: {sat_recording}")
 
 
 def _render_other_document(doc):
@@ -224,7 +219,51 @@ def _render_other_document(doc):
 
 def _is_satisfied(mortgage, all_satisfactions):
     """Check if a mortgage has a corresponding satisfaction"""
-    return _find_satisfaction(mortgage, all_satisfactions) is not None
+    return _get_satisfaction_info(mortgage, all_satisfactions) is not None
+
+
+def _get_satisfaction_info(mortgage, all_satisfactions):
+    """
+    Get satisfaction information for a mortgage.
+    Checks both:
+    1. Separate satisfaction documents
+    2. Discharge notes within the mortgage itself
+    
+    Returns satisfaction detail string or None
+    """
+    # First, check the mortgage's own notes field for discharge/satisfaction language
+    notes = mortgage.get('notes', '') or ''
+    
+    # Look for discharge/satisfaction keywords in notes
+    discharge_patterns = [
+        r'discharged?\s+(.+?)(?:\.|$)',
+        r'satisfied?\s+(.+?)(?:\.|$)',
+        r'released?\s+(.+?)(?:\.|$)',
+        r'paid\s+in\s+full\s+(.+?)(?:\.|$)'
+    ]
+    
+    for pattern in discharge_patterns:
+        match = re.search(pattern, notes, re.IGNORECASE)
+        if match:
+            discharge_info = match.group(0).strip()
+            # Try to extract date
+            date_match = re.search(r'([A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', discharge_info)
+            if date_match:
+                return f"Discharged: {date_match.group(1)}"
+            else:
+                return f"Discharged (see notes)"
+    
+    # If not in notes, check for separate satisfaction document
+    satisfaction = _find_satisfaction(mortgage, all_satisfactions)
+    if satisfaction:
+        sat_date = satisfaction.get('dates', {}).get('recordDate', 'Unknown date')
+        sat_recording = satisfaction.get('recording', {}).get('locationInstrumentNumber', '')
+        if sat_recording:
+            return f"Discharged: {sat_date} (Recording: {sat_recording})"
+        else:
+            return f"Discharged: {sat_date}"
+    
+    return None
 
 
 def _find_satisfaction(mortgage, all_satisfactions):

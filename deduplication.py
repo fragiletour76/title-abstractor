@@ -2,6 +2,7 @@
 Deduplication utilities for Pass 1 (inventory) and Pass 2 (extracted documents)
 """
 from difflib import SequenceMatcher
+import re
 
 
 def deduplicate_inventory(inventory):
@@ -94,7 +95,7 @@ def deduplicate_documents(documents):
             
             if similarity_score >= 0.85:
                 print(f"  [DEDUP PASS 2] Document {i+1} is {similarity_score*100:.0f}% similar to document {j+1} - merging")
-                _merge_page_locations(existing_doc, doc)
+                _merge_documents(existing_doc, doc)
                 is_duplicate = True
                 break
         
@@ -119,7 +120,6 @@ def _calculate_document_similarity(doc1, doc2):
     score = 0.0
     weights = []
     
-    # 1. Recording number (strongest signal - 40% weight)
     recording1_raw = doc1.get('recording', {}).get('locationInstrumentNumber')
     recording2_raw = doc2.get('recording', {}).get('locationInstrumentNumber')
     
@@ -133,7 +133,6 @@ def _calculate_document_similarity(doc1, doc2):
         else:
             weights.append(0.4)
     
-    # 2. Document type (20% weight)
     type1 = _normalize_string(doc1.get('documentType'))
     type2 = _normalize_string(doc2.get('documentType'))
     
@@ -144,7 +143,6 @@ def _calculate_document_similarity(doc1, doc2):
             score += 0.15
         weights.append(0.2)
     
-    # 3. Record date (15% weight) - normalize dates
     date1_raw = doc1.get('dates', {}).get('recordDate')
     date2_raw = doc2.get('dates', {}).get('recordDate')
     
@@ -156,13 +154,11 @@ def _calculate_document_similarity(doc1, doc2):
             score += 0.15
         weights.append(0.15)
     
-    # 4. Parties (15% weight) - normalize party names
     parties1_from_raw = doc1.get('parties', {}).get('from', []) or []
     parties1_to_raw = doc1.get('parties', {}).get('to', []) or []
     parties2_from_raw = doc2.get('parties', {}).get('from', []) or []
     parties2_to_raw = doc2.get('parties', {}).get('to', []) or []
     
-    # Normalize all party names
     parties1_from = set(_normalize_string(p) for p in parties1_from_raw)
     parties1_to = set(_normalize_string(p) for p in parties1_to_raw)
     parties2_from = set(_normalize_string(p) for p in parties2_from_raw)
@@ -175,7 +171,6 @@ def _calculate_document_similarity(doc1, doc2):
         score += 0.15 * parties_score
         weights.append(0.15)
     
-    # 5. Legal description (10% weight)
     legal1 = (doc1.get('property', {}).get('legalDescription') or '').strip()
     legal2 = (doc2.get('property', {}).get('legalDescription') or '').strip()
     
@@ -210,7 +205,30 @@ def _normalize_doc_type(doc_type):
     return doc_type
 
 
-def _merge_page_locations(existing_doc, duplicate_doc):
+def _has_discharge_info(notes):
+    """Check if notes contain discharge/satisfaction information"""
+    if not notes:
+        return False
+    
+    notes_lower = notes.lower()
+    discharge_keywords = [
+        'discharged',
+        'satisfied',
+        'released',
+        'paid in full',
+        'cancelled',
+        'terminated'
+    ]
+    
+    return any(keyword in notes_lower for keyword in discharge_keywords)
+
+
+def _merge_documents(existing_doc, duplicate_doc):
+    """
+    Merge duplicate document into existing one.
+    Preserves page locations and important notes (especially discharge info).
+    """
+    # Merge page locations
     existing_pages = existing_doc.get('pageLocation', {})
     duplicate_pages = duplicate_doc.get('pageLocation', {})
     
@@ -228,3 +246,21 @@ def _merge_page_locations(existing_doc, duplicate_doc):
         existing_doc['pageLocation']['end'] = max(all_ends)
         page_ranges = ', '.join([f"{p.get('start')}-{p.get('end')}" for p in existing_doc['allPageLocations']])
         existing_doc['pageLocation']['note'] = f"Document appears on multiple pages: {page_ranges}"
+    
+    # Merge notes - PRIORITIZE DISCHARGE INFORMATION
+    existing_notes = existing_doc.get('notes', '') or ''
+    duplicate_notes = duplicate_doc.get('notes', '') or ''
+    
+    # If duplicate has discharge info but existing doesn't, use duplicate's notes
+    if _has_discharge_info(duplicate_notes) and not _has_discharge_info(existing_notes):
+        print(f"    → Preserving discharge info from duplicate document")
+        existing_doc['notes'] = duplicate_notes
+    # If existing has discharge info, keep it
+    elif _has_discharge_info(existing_notes):
+        pass  # Keep existing
+    # If neither has discharge info, combine them if different
+    elif duplicate_notes and duplicate_notes != existing_notes:
+        if existing_notes:
+            existing_doc['notes'] = f"{existing_notes} | {duplicate_notes}"
+        else:
+            existing_doc['notes'] = duplicate_notes
