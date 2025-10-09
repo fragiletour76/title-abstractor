@@ -279,7 +279,12 @@ elif st.session_state.current_abstract_id is None:
                     # Pass 1: Inventory
                     st.write(log_message("🔍 **PASS 1:** Creating document inventory..."))
                     inventory = abstractor._get_inventory(file_info, len(images))
-                    st.write(log_message(f"✓ Found {len(inventory)} documents:"))
+                    st.write(log_message(f"✓ Found {len(inventory)} documents"))
+                    
+                    # Deduplicate inventory
+                    from deduplication import deduplicate_inventory
+                    inventory = deduplicate_inventory(inventory)
+                    st.write(log_message(f"✓ After deduplication: {len(inventory)} unique documents:"))
                     
                     for i, doc_info in enumerate(inventory, 1):
                         pages = doc_info.get('pages', {})
@@ -288,7 +293,7 @@ elif st.session_state.current_abstract_id is None:
                     
                     # Pass 2: Detailed extraction with timing
                     st.write("")
-                    st.write(log_message("📝 **PASS 2:** Extracting document details..."))
+                    st.write(log_message("🔍 **PASS 2:** Extracting document details..."))
                     
                     start_time = time.time()
                     all_documents = []
@@ -315,6 +320,13 @@ elif st.session_state.current_abstract_id is None:
                         progress_bar.progress(i / len(inventory))
                     
                     st.write(log_message(f"✓ Extracted {len(all_documents)} documents"))
+                    
+                    # Pass 2.5: Deduplicate extracted documents
+                    st.write("")
+                    st.write(log_message("🔍 **DEDUPLICATION:** Removing duplicate documents..."))
+                    from deduplication import deduplicate_documents
+                    all_documents = deduplicate_documents(all_documents)
+                    st.write(log_message(f"✓ After deduplication: {len(all_documents)} unique documents"))
                     
                     # Cleanup
                     uploader.delete_file(file_info['name'])
@@ -494,9 +506,9 @@ else:
         except:
             pass  # If no time metrics, just skip
     
-    # Mode selector
+    # Mode selector - UPDATED: Removed Timeline button, renamed Chain to Chain Analysis
     st.divider()
-    mode_col1, mode_col2, mode_col3, mode_col4, mode_col5, mode_col6, mode_col7 = st.columns(7)
+    mode_col1, mode_col2, mode_col3, mode_col4, mode_col5, mode_col6 = st.columns(6)
     
     with mode_col1:
         if st.button("👁️ View", use_container_width=True, 
@@ -515,30 +527,24 @@ else:
             st.rerun()
     
     with mode_col3:
-        if st.button("📊 Timeline", use_container_width=True,
-                     type="primary" if st.session_state.view_mode == 'timeline' else "secondary"):
-            st.session_state.view_mode = 'timeline'
-            st.rerun()
-    
-    with mode_col4:
-        if st.button("🔗 Chain", use_container_width=True,
+        if st.button("🔗 Chain Analysis", use_container_width=True,
                      type="primary" if st.session_state.view_mode == 'chain' else "secondary"):
             st.session_state.view_mode = 'chain'
             st.rerun()
     
-    with mode_col5:
+    with mode_col4:
         if st.button("📄 PDF", use_container_width=True,
                      type="primary" if st.session_state.view_mode == 'pdf' else "secondary"):
             st.session_state.view_mode = 'pdf'
             st.rerun()
     
-    with mode_col6:
+    with mode_col5:
         if st.button("💬 Chat", use_container_width=True,
                      type="primary" if st.session_state.view_mode == 'chat' else "secondary"):
             st.session_state.view_mode = 'chat'
             st.rerun()
     
-    with mode_col7:
+    with mode_col6:
         if st.button("📋 Log", use_container_width=True,
                      type="primary" if st.session_state.view_mode == 'log' else "secondary"):
             st.session_state.view_mode = 'log'
@@ -585,13 +591,8 @@ else:
         from modules.edit_interface import render_edit_interface
         render_edit_interface(abstract, db)
     
-    elif st.session_state.view_mode == 'timeline':
-        # TIMELINE MODE
-        from modules.timeline_view import render_timeline
-        render_timeline(abstract)
-    
     elif st.session_state.view_mode == 'chain':
-        # CHAIN VISUALIZATION MODE - UPDATED WITH TABS
+        # CHAIN ANALYSIS MODE - COMBINED Timeline and Chain Views
         try:
             data = json.loads(abstract.edited_json_data if abstract.is_edited else abstract.json_data)
         except:
@@ -599,16 +600,28 @@ else:
             data = None
         
         if data:
-            # Create tabs
-            tab1, tab2 = st.tabs(["🔗 Visual Chain", "🔍 Chain Analysis"])
+            st.subheader("🔗 Chain Analysis")
+            
+            # Create tabs for different views
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 Timeline", "🗺️ Visual Chain", "📋 Chain Details", "🔍 Verification"])
             
             with tab1:
-                # Original chain visualization
+                # Timeline view
+                from modules.timeline_view import render_timeline
+                render_timeline(abstract)
+            
+            with tab2:
+                # Visual chain diagram
                 from modules.chain_visualization import render_chain_visualization
                 render_chain_visualization(abstract)
             
-            with tab2:
-                # New chain analysis
+            with tab3:
+                # Chain details with related documents
+                from modules.chain_detail_view import render_chain_detail_view
+                render_chain_detail_view(abstract)
+            
+            with tab4:
+                # Chain verification and analysis
                 st.subheader("Chain Verification & Analysis")
                 
                 documents = data.get('documents', [])
@@ -663,35 +676,54 @@ else:
                     # Display hierarchy
                     st.subheader("Chain Hierarchy")
                     
-                    def display_chain_node(node, level=0):
-                        """Recursively display chain hierarchy"""
+                    def display_chain_node(node, level=0, indent=""):
+                        """Display chain hierarchy without nested expanders"""
                         status_icon = "✅" if node['verified'] else "❌"
                         chain_name = node['chain_id'].replace('_', ' ').title()
                         
-                        with st.expander(f"{status_icon} **{chain_name}** - {node['property']}", expanded=(level == 0)):
-                            st.write(f"**First Owner:** {node['first_owner']}")
-                            st.write(f"**Documents:** {', '.join(f'#{d}' for d in node['document_ids'])}")
+                        # Use indentation instead of nested expanders
+                        if level == 0:
+                            with st.expander(f"{status_icon} **{chain_name}** - {node['property']}", expanded=True):
+                                st.write(f"**First Owner:** {node['first_owner']}")
+                                st.write(f"**Documents:** {', '.join(f'#{d}' for d in node['document_ids'])}")
+                                
+                                if node['issues']:
+                                    st.warning("**Issues:**")
+                                    for issue in node['issues']:
+                                        st.write(f"- {issue['message']}")
+                                
+                                if st.checkbox(f"Show document details", key=f"details_{node['chain_id']}_{level}"):
+                                    for doc_id in node['document_ids']:
+                                        doc = documents[doc_id - 1]
+                                        st.markdown(f"""
+                                        **Document #{doc_id}:** {doc.get('documentType', 'Unknown')}
+                                        - Date: {doc.get('dates', {}).get('recordDate', 'Unknown')}
+                                        - From: {', '.join(doc.get('parties', {}).get('from', ['Unknown']))}
+                                        - To: {', '.join(doc.get('parties', {}).get('to', ['Unknown']))}
+                                        - Recording: {doc.get('recording', {}).get('locationInstrumentNumber', 'Unknown')}
+                                        """)
+                                
+                                # Display children with indentation
+                                if node['children']:
+                                    st.write("**Related Chains:**")
+                                    for child in node['children']:
+                                        display_chain_node(child, level + 1, indent + "  ")
+                        else:
+                            # Child nodes use markdown with indentation instead of expanders
+                            child_icon = "✅" if node['verified'] else "❌"
+                            st.markdown(f"{indent}**{child_icon} {chain_name}** - {node['property']}")
+                            st.markdown(f"{indent}- First Owner: {node['first_owner']}")
+                            st.markdown(f"{indent}- Documents: {', '.join(f'#{d}' for d in node['document_ids'])}")
                             
                             if node['issues']:
-                                st.warning("**Issues:**")
+                                st.markdown(f"{indent}⚠️ Issues:")
                                 for issue in node['issues']:
-                                    st.write(f"- {issue['message']}")
+                                    st.markdown(f"{indent}  - {issue['message']}")
                             
-                            if st.checkbox(f"Show document details", key=f"details_{node['chain_id']}_{level}"):
-                                for doc_id in node['document_ids']:
-                                    doc = documents[doc_id - 1]
-                                    st.markdown(f"""
-                                    **Document #{doc_id}:** {doc.get('documentType', 'Unknown')}
-                                    - Date: {doc.get('dates', {}).get('recordDate', 'Unknown')}
-                                    - From: {', '.join(doc.get('parties', {}).get('from', ['Unknown']))}
-                                    - To: {', '.join(doc.get('parties', {}).get('to', ['Unknown']))}
-                                    - Recording: {doc.get('recording', {}).get('locationInstrumentNumber', 'Unknown')}
-                                    """)
-                            
+                            # Recursively display deeper children
                             if node['children']:
-                                st.write("**Child Chains:**")
                                 for child in node['children']:
-                                    display_chain_node(child, level + 1)
+                                    display_chain_node(child, level + 1, indent + "  ")
                     
                     for node in result['hierarchy']:
                         display_chain_node(node)
